@@ -101,5 +101,20 @@
         "txt2img_denoising_strength": 0.3,
         "txt2img_batch_count": 1,
         "txt2img_batch_size": 1
+    },
+    "Default": {
+        "txt2img_sampling": "DPM++ SDE Karras",
+        "txt2img_steps": 50,
+        "txt2img_width": 512,
+        "txt2img_height": 768,
+        "txt2img_batch_count": 1,
+        "txt2img_batch_size": 1,
+        "txt2img_restore_faces": false,
+        "txt2img_enable_hr": true,
+        "txt2img_hr_scale": 1.5,
+        "txt2img_hr_upscaler": "Latent (nearest-exact)",
+        "txt2img_hires_steps": 60,
+        "txt2img_denoising_strength": 0.6,
+        "txt2img_cfg_scale": 7
     }
 }
