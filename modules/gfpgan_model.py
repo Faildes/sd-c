@@ -1,10 +1,12 @@
 import os
+import sys
+import traceback
 
 import facexlib
 import gfpgan
 
 import modules.face_restoration
-from modules import paths, shared, devices, modelloader, errors
+from modules import paths, shared, devices, modelloader
 
 model_dir = "GFPGAN"
 user_path = None
@@ -70,8 +72,11 @@ gfpgan_constructor = None
 
 
 def setup_model(dirname):
+    global model_path
+    if not os.path.exists(model_path):
+        os.makedirs(model_path)
+
     try:
-        os.makedirs(model_path, exist_ok=True)
         from gfpgan import GFPGANer
         from facexlib import detection, parsing  # noqa: F401
         global user_path
@@ -107,4 +112,5 @@ def setup_model(dirname):
 
         shared.face_restorers.append(FaceRestorerGFPGAN())
     except Exception:
-        errors.report("Error setting up GFPGAN", exc_info=True)
+        print("Error setting up GFPGAN:", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)

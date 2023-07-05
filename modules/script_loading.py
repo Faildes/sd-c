@@ -1,7 +1,7 @@
 import os
+import sys
+import traceback
 import importlib.util
-
-from modules import errors
 
 
 def load_module(path):
@@ -27,4 +27,5 @@ def preload_extensions(extensions_dir, parser):
                 module.preload(parser)
 
         except Exception:
-            errors.report(f"Error running preload() for {preload_script}", exc_info=True)
+            print(f"Error running preload() for {preload_script}", file=sys.stderr)
+            print(traceback.format_exc(), file=sys.stderr)

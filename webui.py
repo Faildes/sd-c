@@ -20,9 +20,9 @@ import logging
 
 logging.getLogger("xformers").addFilter(lambda record: 'A matching Triton is not available' not in record.getMessage())
 
-from modules import paths, timer, import_hook, errors, devices  # noqa: F401
+from modules import paths, timer, import_hook, errors  # noqa: F401
 
-startup_timer = timer.startup_timer
+startup_timer = timer.Timer()
 
 import torch
 import pytorch_lightning   # noqa: F401 # pytorch_lightning should be imported after torch, but it re-enables warnings on import so import once to disable them
@@ -58,7 +58,6 @@ import modules.sd_hijack
 import modules.sd_hijack_optimizations
 import modules.sd_models
 import modules.sd_vae
-import modules.sd_unet
 import modules.txt2img
 import modules.script_callbacks
 import modules.textual_inversion.textual_inversion
@@ -135,7 +134,7 @@ there are reports of issues with training tab on the latest version.
 Use --skip-version-check commandline argument to disable this check.
         """.strip())
 
-    expected_xformers_version = "0.0.20"
+    expected_xformers_version = "0.0.17"
     if shared.xformers_available:
         import xformers
 
@@ -272,8 +271,8 @@ def initialize_rest(*, reload_script_modules=False):
 
     localization.list_localizations(cmd_opts.localizations_dir)
 
-    with startup_timer.subcategory("load scripts"):
-        modules.scripts.load_scripts()
+    modules.scripts.load_scripts()
+    startup_timer.record("load scripts")
 
     if reload_script_modules:
         for module in [module for name, module in sys.modules.items() if name.startswith("modules.ui")]:
@@ -292,9 +291,6 @@ def initialize_rest(*, reload_script_modules=False):
     modules.sd_hijack.list_optimizers()
     startup_timer.record("scripts list_optimizers")
 
-    modules.sd_unet.list_unets()
-    startup_timer.record("scripts list_unets")
-
     def load_model():
         """
         Accesses shared.sd_model property to load model.
@@ -309,8 +305,6 @@ def initialize_rest(*, reload_script_modules=False):
             modules.sd_hijack.apply_optimizations()
 
     Thread(target=load_model).start()
-
-    Thread(target=devices.first_time_calculation).start()
 
     shared.reload_hypernetworks()
     startup_timer.record("reload hypernetworks")
@@ -387,6 +381,17 @@ def webui():
 
         gradio_auth_creds = list(get_gradio_auth_creds()) or None
 
+        # this restores the missing /docs endpoint
+        if launch_api and not hasattr(FastAPI, 'original_setup'):
+            # TODO: replace this with `launch(app_kwargs=...)` if https://github.com/gradio-app/gradio/pull/4282 gets merged
+            def fastapi_setup(self):
+                self.docs_url = "/docs"
+                self.redoc_url = "/redoc"
+                self.original_setup()
+
+            FastAPI.original_setup = FastAPI.setup
+            FastAPI.setup = fastapi_setup
+
         app, local_url, share_url = shared.demo.launch(
             share=cmd_opts.share,
             server_name=server_name,
@@ -396,13 +401,9 @@ def webui():
             ssl_verify=cmd_opts.disable_tls_verify,
             debug=cmd_opts.gradio_debug,
             auth=gradio_auth_creds,
-            inbrowser=cmd_opts.autolaunch and os.getenv('SD_WEBUI_RESTARTING ') != '1',
+            inbrowser=cmd_opts.autolaunch,
             prevent_thread_lock=True,
             allowed_paths=cmd_opts.gradio_allowed_path,
-            app_kwargs={
-                "docs_url": "/docs",
-                "redoc_url": "/redoc",
-            },
         )
         if cmd_opts.add_stop_route:
             app.add_route("/_stop", stop_route, methods=["POST"])
@@ -428,12 +429,9 @@ def webui():
 
         ui_extra_networks.add_pages_to_demo(app)
 
-        startup_timer.record("add APIs")
+        modules.script_callbacks.app_started_callback(shared.demo, app)
+        startup_timer.record("scripts app_started_callback")
 
-        with startup_timer.subcategory("app_started_callback"):
-            modules.script_callbacks.app_started_callback(shared.demo, app)
-
-        timer.startup_record = startup_timer.dump()
         print(f"Startup time: {startup_timer.summary()}.")
 
         if cmd_opts.subpath:
@@ -458,7 +456,6 @@ def webui():
             # If we catch a keyboard interrupt, we want to stop the server and exit.
             shared.demo.close()
             break
-
         print('Restarting UI...')
         shared.demo.close()
         time.sleep(0.5)
@@ -468,6 +465,10 @@ def webui():
         modules.script_callbacks.script_unloaded_callback()
         startup_timer.record("scripts unloaded callback")
         initialize_rest(reload_script_modules=True)
+
+        modules.script_callbacks.on_list_optimizers(modules.sd_hijack_optimizations.list_optimizers)
+        modules.sd_hijack.list_optimizers()
+        startup_timer.record("scripts list_optimizers")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 from __future__ import annotations
 import math
+import sys
+import traceback
 import psutil
 
 import torch
@@ -46,7 +48,7 @@ class SdOptimizationXformers(SdOptimization):
     priority = 100
 
     def is_available(self):
-        return shared.cmd_opts.force_enable_xformers or (shared.xformers_available and torch.cuda.is_available() and (6, 0) <= torch.cuda.get_device_capability(shared.device) <= (9, 0))
+        return shared.cmd_opts.force_enable_xformers or (shared.xformers_available and torch.version.cuda and (6, 0) <= torch.cuda.get_device_capability(shared.device) <= (9, 0))
 
     def apply(self):
         ldm.modules.attention.CrossAttention.forward = xformers_attention_forward
@@ -138,7 +140,8 @@ if shared.cmd_opts.xformers or shared.cmd_opts.force_enable_xformers:
         import xformers.ops
         shared.xformers_available = True
     except Exception:
-        errors.report("Cannot import xformers", exc_info=True)
+        print("Cannot import xformers", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
 
 
 def get_available_vram():
@@ -602,7 +605,7 @@ def sdp_attnblock_forward(self, x):
     q, k, v = (rearrange(t, 'b c h w -> b (h w) c') for t in (q, k, v))
     dtype = q.dtype
     if shared.opts.upcast_attn:
-        q, k, v = q.float(), k.float(), v.float()
+        q, k = q.float(), k.float()
     q = q.contiguous()
     k = k.contiguous()
     v = v.contiguous()

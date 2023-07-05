@@ -1,13 +1,17 @@
 import os
+import sys
 import threading
+import traceback
 
-from modules import shared, errors
-from modules.gitpython_hack import Repo
+import git
+
+from modules import shared
 from modules.paths_internal import extensions_dir, extensions_builtin_dir, script_path  # noqa: F401
 
 extensions = []
 
-os.makedirs(extensions_dir, exist_ok=True)
+if not os.path.exists(extensions_dir):
+    os.makedirs(extensions_dir)
 
 
 def active():
@@ -50,9 +54,10 @@ class Extension:
         repo = None
         try:
             if os.path.exists(os.path.join(self.path, ".git")):
-                repo = Repo(self.path)
+                repo = git.Repo(self.path)
         except Exception:
-            errors.report(f"Error reading github repository info from {self.path}", exc_info=True)
+            print(f"Error reading github repository info from {self.path}:", file=sys.stderr)
+            print(traceback.format_exc(), file=sys.stderr)
 
         if repo is None or repo.bare:
             self.remote = None
@@ -67,8 +72,8 @@ class Extension:
                 self.commit_hash = commit.hexsha
                 self.version = self.commit_hash[:8]
 
-            except Exception:
-                errors.report(f"Failed reading extension data from Git repository ({self.name})", exc_info=True)
+            except Exception as ex:
+                print(f"Failed reading extension data from Git repository ({self.name}): {ex}", file=sys.stderr)
                 self.remote = None
 
         self.have_info_from_repo = True
@@ -89,7 +94,7 @@ class Extension:
         return res
 
     def check_updates(self):
-        repo = Repo(self.path)
+        repo = git.Repo(self.path)
         for fetch in repo.remote().fetch(dry_run=True):
             if fetch.flags != fetch.HEAD_UPTODATE:
                 self.can_update = True
@@ -111,7 +116,7 @@ class Extension:
         self.status = "latest"
 
     def fetch_and_reset_hard(self, commit='origin'):
-        repo = Repo(self.path)
+        repo = git.Repo(self.path)
         # Fix: `error: Your local changes to the following files would be overwritten by merge`,
         # because WSL2 Docker set 755 file permissions instead of 644, this results to the error.
         repo.git.fetch(all=True)

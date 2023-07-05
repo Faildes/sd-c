@@ -14,7 +14,7 @@ import ldm.modules.midas as midas
 
 from ldm.util import instantiate_from_config
 
-from modules import paths, shared, modelloader, devices, script_callbacks, sd_vae, sd_disable_initialization, errors, hashes, sd_models_config, sd_unet
+from modules import paths, shared, modelloader, devices, script_callbacks, sd_vae, sd_disable_initialization, errors, hashes, sd_models_config
 from modules.sd_hijack_inpainting import do_inpainting_hijack
 from modules.timer import Timer
 import tomesd
@@ -95,7 +95,8 @@ except Exception:
 
 
 def setup_model():
-    os.makedirs(model_path, exist_ok=True)
+    if not os.path.exists(model_path):
+        os.makedirs(model_path)
 
     enable_midas_autodownload()
 
@@ -163,7 +164,6 @@ def model_hash(filename):
 
 
 def select_checkpoint():
-    """Raises `FileNotFoundError` if no checkpoints are found."""
     model_checkpoint = shared.opts.sd_model_checkpoint
 
     checkpoint_info = checkpoint_alisases.get(model_checkpoint, None)
@@ -171,14 +171,14 @@ def select_checkpoint():
         return checkpoint_info
 
     if len(checkpoints_list) == 0:
-        error_message = "No checkpoints found. When searching for checkpoints, looked at:"
+        print("No checkpoints found. When searching for checkpoints, looked at:", file=sys.stderr)
         if shared.cmd_opts.ckpt is not None:
-            error_message += f"\n - file {os.path.abspath(shared.cmd_opts.ckpt)}"
-        error_message += f"\n - directory {model_path}"
+            print(f" - file {os.path.abspath(shared.cmd_opts.ckpt)}", file=sys.stderr)
+        print(f" - directory {model_path}", file=sys.stderr)
         if shared.cmd_opts.ckpt_dir is not None:
-            error_message += f"\n - directory {os.path.abspath(shared.cmd_opts.ckpt_dir)}"
-        error_message += "Can't run without a checkpoint. Find and place a .ckpt or .safetensors file into any of those locations."
-        raise FileNotFoundError(error_message)
+            print(f" - directory {os.path.abspath(shared.cmd_opts.ckpt_dir)}", file=sys.stderr)
+        print("Can't run without a checkpoint. Find and place a .ckpt or .safetensors file into any of those locations. The program will exit.", file=sys.stderr)
+        exit(1)
 
     checkpoint_info = next(iter(checkpoints_list.values()))
     if model_checkpoint is not None:
@@ -421,7 +421,7 @@ class SdModelData:
                 try:
                     load_model()
                 except Exception as e:
-                    errors.display(e, "loading stable diffusion model", full_traceback=True)
+                    errors.display(e, "loading stable diffusion model")
                     print("", file=sys.stderr)
                     print("Stable diffusion model failed to load", file=sys.stderr)
                     self.sd_model = None
@@ -506,11 +506,6 @@ def load_model(checkpoint_info=None, already_loaded_state_dict=None):
 
     timer.record("scripts callbacks")
 
-    with devices.autocast(), torch.no_grad():
-        sd_model.cond_stage_model_empty_prompt = sd_model.cond_stage_model([""])
-
-    timer.record("calculate empty prompt")
-
     print(f"Model loaded in {timer.summary()}.")
 
     return sd_model
@@ -529,8 +524,6 @@ def reload_model_weights(sd_model=None, info=None):
         current_checkpoint_info = sd_model.sd_checkpoint_info
         if sd_model.sd_model_checkpoint == checkpoint_info.filename:
             return
-
-        sd_unet.apply_unet("None")
 
         if shared.cmd_opts.lowvram or shared.cmd_opts.medvram:
             lowvram.send_everything_to_cpu()
