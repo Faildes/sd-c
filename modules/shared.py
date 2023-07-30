@@ -489,8 +489,8 @@ options_templates.update(options_section(('ui', "User interface"), {
     "ui_tab_order": OptionInfo([], "UI tab order", ui_components.DropdownMulti, lambda: {"choices": list(tab_names)}).needs_restart(),
     "hidden_tabs": OptionInfo([], "Hidden UI tabs", ui_components.DropdownMulti, lambda: {"choices": list(tab_names)}).needs_restart(),
     "ui_reorder": OptionInfo(", ".join(ui_reorder_categories), "txt2img/img2img UI item order").needs_restart(),
-    "hires_fix_show_sampler": OptionInfo(False, "Hires fix: show hires sampler selection").needs_restart(),
-    "hires_fix_show_prompts": OptionInfo(False, "Hires fix: show hires prompt and negative prompt").needs_restart(),
+    "hires_fix_show_sampler": OptionInfo(True, "Hires fix: show hires sampler selection").needs_restart(),
+    "hires_fix_show_prompts": OptionInfo(True, "Hires fix: show hires prompt and negative prompt").needs_restart(),
 }))
 
 options_templates.update(options_section(('infotext', "Infotext"), {
