@@ -1,18 +1,20 @@
 from difflib import restore
 import random
+import copy
 from pprint import pprint
 from typing import Union
 import torch
-from modules import devices, extra_networks, shared
+from modules import devices, shared, extra_networks
 from modules.script_callbacks import CFGDenoisedParams, CFGDenoiserParams
 from torchvision.transforms import InterpolationMode, Resize  # Mask.
 import scripts.attention as att
 from scripts.regions import floatdef
 
-orig_lora_forward = None
-orig_lora_apply_weights = None
-orig_lora_Linear_forward = None
-orig_lora_Conv2d_forward = None
+islora = True
+in_hr = False
+layer_name = "lora_layer_name"
+orig_Linear_forward = None
+orig_lora_functional = False
 lactive = False
 labug =False
 MINID = 1000
@@ -26,34 +28,32 @@ def setloradevice(self):
     if self.debug : print("change LoRA device for new lora")
     
     if hasattr(lora,"lora_apply_weights"): # for new LoRA applying
+        oldnew=[]
         for l in lora.loaded_loras:
             LORAID = LORAID + 1
             if LORAID > MAXID:
                 LORAID = MINID
             # l.name = l.name + "added_by_regional_prompter" + str(random.random())
-            l.name = l.name + "added_by_regional_prompter" + str(LORAID)
+            old = l.name
+            new = l.name + "_in_RP_" + str(LORAID)
+            l.name = new
+            oldnew.append(old,new)
+
             for key in l.modules.keys():
                 changethedevice(l.modules[key])
 
 def setuploras(self):
-    import lora
-    global orig_lora_forward,orig_lora_apply_weights,lactive, orig_lora_Linear_forward, orig_lora_Conv2d_forward, lactive, labug
+    global lactive, labug, islora, orig_Linear_forward, orig_lora_functional, layer_name
     lactive = True
     labug = self.debug
+    islora = self.isbefore15
+    layer_name = self.layer_name
+    orig_lora_functional = shared.opts.lora_functional
 
-    if hasattr(lora,"lora_apply_weights"): # for new LoRA applying
-        if self.debug : print("hijack lora_apply_weights")
-        orig_lora_apply_weights = lora.lora_apply_weights
-        orig_lora_Linear_forward = torch.nn.Linear.forward
-        orig_lora_Conv2d_forward = torch.nn.Conv2d.forward
-        lora.lora_apply_weights = lora_apply_weights
-        torch.nn.Linear.forward = lora_Linear_forward
-        torch.nn.Conv2d.forward = lora_Conv2d_forward
-
-    elif hasattr(lora,"lora_forward"):
-        if self.debug : print("hijack lora_forward")
-        orig_lora_forward = lora.lora_forward
-        lora.lora_forward = lora_forward
+    if self.isbefore15:
+        shared.opts.lora_functional = True
+    orig_Linear_forward = torch.nn.Linear.forward
+    torch.nn.Linear.forward = h_Linear_forward
 
 def cloneparams(orig,target):
     target.x = orig.x.clone()
@@ -86,7 +86,9 @@ def denoiser_callback_s(self, params: CFGDenoiserParams):
         self.step = params.sampling_step
         self.pfirst = True
 
-        if len(att.pmaskshw) > 3:
+        lim = 1 if self.isxl else 3
+
+        if len(att.pmaskshw) > lim:
             if "La" in self.calc:
                 self.filters = []
                 for b in range(self.batch_size):
@@ -130,6 +132,8 @@ def denoiser_callback_s(self, params: CFGDenoiserParams):
                 self.rebacked = True
 
     if "La" in self.calc:
+        global in_hr
+        in_hr = self.in_hr
         xt = params.x.clone()
         ict = params.image_cond.clone()
         st =  params.sigma.clone()
@@ -137,7 +141,12 @@ def denoiser_callback_s(self, params: CFGDenoiserParams):
         areas = xt.shape[0] // batch -1
         # SBM Stale version workaround.
         if hasattr(params,"text_cond"):
-            ct =  params.text_cond.clone()
+            if "DictWithShape" in params.text_cond.__class__.__name__:
+                ct = {}
+                for key in params.text_cond.keys():
+                    ct[key] = params.text_cond[key].clone()
+            else:
+                ct =  params.text_cond.clone()
 
         for a in range(areas):
             for b in range(batch):
@@ -146,7 +155,11 @@ def denoiser_callback_s(self, params: CFGDenoiserParams):
                 params.sigma[b+a*batch] = st[a + b * areas]
                 # SBM Stale version workaround.
                 if hasattr(params,"text_cond"):
-                    params.text_cond[b+a*batch] = ct[a + b * areas]
+                    if "DictWithShape" in params.text_cond.__class__.__name__:
+                        for key in params.text_cond.keys():
+                            params.text_cond[key][b+a*batch] = ct[key][a + b * areas]
+                    else:
+                        params.text_cond[b+a*batch] = ct[a + b * areas]
 
 def denoised_callback_s(self, params: CFGDenoisedParams):
     if "La" in self.calc:
@@ -184,17 +197,21 @@ def denoised_callback_s(self, params: CFGDenoisedParams):
 
 # Remove tags from called lora names.
 flokey = lambda x: (x.split("added_by_regional_prompter")[0]
-                    .split("added_by_lora_block_weight")[0])
+                    .split("added_by_lora_block_weight")[0].split("_in_LBW")[0].split("_in_RP")[0])
 
 def lora_namer(self, p, lnter, lnur):
-    ldict = {}
+    ldict_u = {}
+    ldict_te = {}
     lorder = [] # Loras call order for matching with u/te lists.
     import lora as loraclass
     for lora in loraclass.loaded_loras:
-        ldict[lora.name] = lora.multiplier
+        ldict_u[lora.name] =lora.multiplier if self.isbefore15 else lora.unet_multiplier
+        ldict_te[lora.name] =lora.multiplier  if self.isbefore15 else lora.te_multiplier
     
     subprompts = self.current_prompts[0].split("AND")
-    llist =[ldict.copy() for i in range(len(subprompts)+1)]
+    ldictlist_u =[ldict_u.copy() for i in range(len(subprompts)+1)]
+    ldictlist_te =[ldict_te.copy() for i in range(len(subprompts)+1)]
+
     for i, prompt in enumerate(subprompts):
         _, extranets = extra_networks.parse_prompts([prompt])
         calledloras = extranets["lora"]
@@ -204,28 +221,37 @@ def lora_namer(self, p, lnter, lnur):
 
         for called in calledloras:
             names = names + called.items[0]
-            tdict[called.items[0]] = called.items[1]
+            tdict[called.items[0]] = syntaxdealer(called.items,"unet=",1)
 
-        for key in llist[i].keys():
+        for key in ldictlist_u[i].keys():
             shin_key = flokey(key)
             if shin_key in names:
-                llist[i+1][key] = float(tdict[shin_key])
+                ldictlist_u[i+1][key] = float(tdict[shin_key])
+                ldictlist_te[i+1][key] = float(tdict[shin_key])
                 if key not in lorder:
                     lorder.append(key)
             else:
-                llist[i+1][key] = 0
+                ldictlist_u[i+1][key] = 0
+                ldictlist_te[i+1][key] = 0
                 
     if self.debug: print("Regioner lorder: ",lorder)
     global regioner
     regioner.__init__()
-    u_llist = [d.copy() for d in llist[1:]]
-    u_llist.append(llist[0].copy())
-    regioner.te_llist = llist
+    u_llist = [d.copy() for d in ldictlist_u[1:]]
+    u_llist.append(ldictlist_u[0].copy())
+    regioner.te_llist = ldictlist_te
     regioner.u_llist = u_llist
     regioner.ndeleter(lnter, lnur, lorder)
     if self.debug:
         print("LoRA regioner : TE list",regioner.te_llist)
         print("LoRA regioner : U list",regioner.u_llist)
+
+def syntaxdealer(items,type,index): #type "unet=", "x=", "lwbe=" 
+    for item in items:
+        if type in item:
+            if "@" in item:return 1 #for loractl
+            return item.replace(type,"")
+    return items[index] if "@" not in items[index] else 1
 
 def makefilters(c,h,w,masks,mode,usebase,bratios,indmask):
     if indmask:
@@ -285,6 +311,8 @@ def makefilters(c,h,w,masks,mode,usebase,bratios,indmask):
 TE_START_NAME = "transformer_text_model_encoder_layers_0_self_attn_q_proj"
 UNET_START_NAME = "diffusion_model_time_embed_0"
 
+TE_START_NAME_XL = "0_transformer_text_model_encoder_layers_0_self_attn_q_proj"
+
 class LoRARegioner:
 
     def __init__(self):
@@ -293,6 +321,17 @@ class LoRARegioner:
         self.te_llist = [{}]
         self.u_llist = [{}]
         self.mlist = {}
+        self.ctl = False
+
+        try:
+            import lora_ctl_network as ctl
+            self.ctlweight = copy.deepcopy(ctl.lora_weights)
+            for set in self.ctlweight.values():
+                for weight in set.values():
+                    if type(weight) == list:
+                        self.ctl = True        
+        except:
+            pass
 
     def expand_del(self, val, lorder):
         """Broadcast single / comma separated val to lora list. 
@@ -332,6 +371,7 @@ class LoRARegioner:
         import lora
         for i in range(len(lora.loaded_loras)):
             lora.loaded_loras[i].multiplier = self.mlist[lora.loaded_loras[i].name]
+            lora.loaded_loras[i].te_multiplier = self.mlist[lora.loaded_loras[i].name]
 
     def u_start(self):
         if labug : print("u_count",self.u_count ,"u_count '%' divide",  self.u_count % len(self.u_llist))
@@ -340,137 +380,55 @@ class LoRARegioner:
         import lora
         for i in range(len(lora.loaded_loras)):
             lora.loaded_loras[i].multiplier = self.mlist[lora.loaded_loras[i].name]
-    
+            lora.loaded_loras[i].unet_multiplier = self.mlist[lora.loaded_loras[i].name]
+            if labug :print(lora.loaded_loras[i].name)
+            if self.ctl:
+                import lora_ctl_network as ctl
+                key = "hrunet" if in_hr else "unet"
+                if self.mlist[lora.loaded_loras[i].name] == 0:
+                    ctl.lora_weights[lora.loaded_loras[i].name][key] = [[0],[0]]
+                    if labug :print(ctl.lora_weights[lora.loaded_loras[i].name])
+                else:
+                    if key in self.ctlweight[lora.loaded_loras[i].name].keys():
+                        ctl.lora_weights[lora.loaded_loras[i].name][key] = self.ctlweight[lora.loaded_loras[i].name][key]
+                    else:
+                        ctl.lora_weights[lora.loaded_loras[i].name][key] = self.ctlweight[lora.loaded_loras[i].name]["unet"]
+                    if labug :print(ctl.lora_weights[lora.loaded_loras[i].name])
+
     def reset(self):
         self.te_count = 0
         self.u_count = 0
     
 regioner = LoRARegioner()
 
-
-def lora_forward(module, input, res):
-    import lora
-
-    if len(lora.loaded_loras) == 0:
-        return res
-
-    lora_layer_name = getattr(module, 'lora_layer_name', None)
-
-    if lactive:
-        global regioner
-
-        if lora_layer_name == TE_START_NAME:
-            regioner.te_start()
-        elif lora_layer_name == UNET_START_NAME:
-            regioner.u_start()
-
-    for lora_m in lora.loaded_loras:
-        module = lora_m.modules.get(lora_layer_name, None)
-        if labug and lora_layer_name is not None :
-            if "9" in lora_layer_name and ("_attn1_to_q" in lora_layer_name or "self_attn_q_proj" in lora_layer_name): print(lora_m.multiplier,lora_m.name,lora_layer_name,lora_m)
-        if module is not None and lora_m.multiplier:
-            if hasattr(module, 'up'):
-                scale = lora_m.multiplier * (module.alpha / module.up.weight.size(1) if module.alpha else 1.0)
-            else:
-                scale = lora_m.multiplier * (module.alpha / module.dim if module.alpha else 1.0)
-            
-            if hasattr(shared.opts,"lora_apply_to_outputs"):
-                if shared.opts.lora_apply_to_outputs and res.shape == input.shape:
-                    x = res
-                else:
-                    x = input    
-            else:
-                x = input
-        
-            if hasattr(module, 'inference'):
-                res = res + module.inference(x) * scale
-            elif hasattr(module, 'up'):
-                res = res + module.up(module.down(x)) * scale
-
-    return res
-
-def lora_apply_weights(self: Union[torch.nn.Conv2d, torch.nn.Linear, torch.nn.MultiheadAttention]):
-    import lora as loramodule
-
-    lora_layer_name = getattr(self, 'lora_layer_name', None)
-    if lora_layer_name is None:
-        return
-
-    if lactive:
-        global regioner
-
-        if lora_layer_name == TE_START_NAME:
-            regioner.te_start()
-        elif lora_layer_name == UNET_START_NAME:
-            regioner.u_start()
-
-    current_names = getattr(self, "lora_current_names", ())
-    wanted_names = tuple((x.name, x.multiplier) for x in loramodule.loaded_loras)
-
-    if lactive : current_names = None
-
-    weights_backup = getattr(self, "lora_weights_backup", None)
-    if weights_backup is None:
-        if isinstance(self, torch.nn.MultiheadAttention):
-            weights_backup = (self.in_proj_weight.to(devices.cpu, copy=True), self.out_proj.weight.to(devices.cpu, copy=True))
-        else:
-            weights_backup = self.weight.to(devices.cpu, copy=True)
-
-        self.lora_weights_backup = weights_backup
-
-    if current_names != wanted_names:
-        if weights_backup is not None:
-            if isinstance(self, torch.nn.MultiheadAttention):
-                self.in_proj_weight.copy_(weights_backup[0])
-                self.out_proj.weight.copy_(weights_backup[1])
-            else:
-                self.weight.copy_(weights_backup)
-
-        for lora in loramodule.loaded_loras:
-            module = lora.modules.get(lora_layer_name, None)
-            if module is not None and hasattr(self, 'weight'):
-                self.weight += loramodule.lora_calc_updown(lora, module, self.weight)
-                continue
-
-            module_q = lora.modules.get(lora_layer_name + "_q_proj", None)
-            module_k = lora.modules.get(lora_layer_name + "_k_proj", None)
-            module_v = lora.modules.get(lora_layer_name + "_v_proj", None)
-            module_out = lora.modules.get(lora_layer_name + "_out_proj", None)
-
-            if isinstance(self, torch.nn.MultiheadAttention) and module_q and module_k and module_v and module_out:
-                updown_q = loramodule.lora_calc_updown(lora, module_q, self.in_proj_weight)
-                updown_k = loramodule.lora_calc_updown(lora, module_k, self.in_proj_weight)
-                updown_v = loramodule.lora_calc_updown(lora, module_v, self.in_proj_weight)
-                updown_qkv = torch.vstack([updown_q, updown_k, updown_v])
-
-                self.in_proj_weight += updown_qkv
-                self.out_proj.weight += loramodule.lora_calc_updown(lora, module_out, self.out_proj.weight)
-                continue
-
-            if module is None:
-                continue
-
-            print(f'failed to calculate lora weights for layer {lora_layer_name}')
-
-        setattr(self, "lora_current_names", wanted_names)
-
 ############################################################
 ##### for new lora apply method in web-ui
 
-def lora_Linear_forward(self, input):
-    return lora_forward(self, input, torch.nn.Linear_forward_before_lora(self, input))
+def h_Linear_forward(self, input):
+    changethelora(getattr(self, layer_name, None))
+    if islora:
+        import lora
+        return lora.lora_forward(self, input, torch.nn.Linear_forward_before_lora)
+    else:
+        import networks
+        if shared.opts.lora_functional:
+            return networks.network_forward(self, input, torch.nn.Linear_forward_before_network)
+        networks.network_apply_weights(self)
+        return torch.nn.Linear_forward_before_network(self, input)
 
-
-def lora_Conv2d_forward(self, input):
-    return lora_forward(self, input, torch.nn.Conv2d_forward_before_lora(self, input))
-
+def changethelora(name):
+    if lactive:
+        global regioner
+        if name == TE_START_NAME or name == TE_START_NAME_XL:
+            regioner.te_start()
+        elif name == UNET_START_NAME:
+            regioner.u_start()
 
 LORAANDSOON = {
     "IA3Module" : "w",
     "LoraKronModule" : "w1",
     "LycoKronModule" : "w1",
 }
-
 
 def changethedevice(module):
     ltype = type(module).__name__
@@ -515,24 +473,13 @@ def restoremodel(p):
                 module.lora_weights_backup = None
                 module.lora_current_names = None
 
-
 def unloadlorafowards(p):
-    global orig_lora_Linear_forward, orig_lora_Conv2d_forward, orig_lora_apply_weights, orig_lora_forward, lactive
-    lactive = False
+    global orig_Linear_forward, lactive, labug
+    lactive = labug = False
+    shared.opts.lora_functional =  orig_lora_functional
+
     import lora
     lora.loaded_loras.clear()
-    if orig_lora_apply_weights != None :
-        lora.lora_apply_weights = orig_lora_apply_weights
-        orig_lora_apply_weights = None
-
-    if orig_lora_forward != None :
-        lora.lora_forward = orig_lora_forward
-        orig_lora_forward = None
-
-    if orig_lora_Linear_forward != None :
-        torch.nn.Linear.forward = orig_lora_Linear_forward
-        orig_lora_Linear_forward = None
-
-    if orig_lora_Conv2d_forward != None :
-        torch.nn.Conv2d.forward = orig_lora_Conv2d_forward
-        orig_lora_Conv2d_forward = None
+    if orig_Linear_forward != None :
+        torch.nn.Linear.forward = orig_Linear_forward
+        orig_Linear_forward = None
