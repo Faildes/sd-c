@@ -246,7 +246,7 @@ face_restorers = []
 
 
 class OptionInfo:
-    def __init__(self, default=None, label="", component=None, component_args=None, onchange=None, section=None, refresh=None, comment_before='', comment_after=''):
+    def __init__(self, default=None, label="", component=None, component_args=None, onchange=None, section=None, refresh=None, comment_before='', comment_after='', infotext=None):
         self.default = default
         self.label = label
         self.component = component
@@ -254,12 +254,15 @@ class OptionInfo:
         self.onchange = onchange
         self.section = section
         self.refresh = refresh
+        self.do_not_save = False
 
         self.comment_before = comment_before
         """HTML text that will be added after label in UI"""
 
         self.comment_after = comment_after
         """HTML text that will be added before label in UI"""
+
+        self.infotext = infotext
 
     def link(self, label, url):
         self.comment_before += f"[<a href='{url}' target='_blank'>{label}</a>]"
@@ -273,8 +276,16 @@ class OptionInfo:
         self.comment_after += f"<span class='info'>({info})</span>"
         return self
 
+    def html(self, html):
+        self.comment_after += html
+        return self
+
     def needs_restart(self):
         self.comment_after += " <span class='info'>(requires restart)</span>"
+        return self
+
+    def needs_reload_ui(self):
+        self.comment_after += " <span class='info'>(requires Reload UI)</span>"
         return self
 
 
@@ -512,7 +523,7 @@ options_templates.update(options_section(('ui', "Live previews"), {
 }))
 
 options_templates.update(options_section(('sampler-params', "Sampler parameters"), {
-    "hide_samplers": OptionInfo([], "Hide samplers in user interface", gr.CheckboxGroup, lambda: {"choices": [x.name for x in shared_items.list_samplers()]}).needs_restart(),
+    "hide_samplers": OptionInfo([], "Hide samplers in user interface", gr.CheckboxGroup, lambda: {"choices": [x.name for x in shared_items.list_samplers()]}).needs_reload_ui(),
     "eta_ddim": OptionInfo(0.0, "Eta for DDIM", gr.Slider, {"minimum": 0.0, "maximum": 1.0, "step": 0.01}, infotext='Eta DDIM').info("noise multiplier; higher = more unpredictable results"),
     "eta_ancestral": OptionInfo(1.0, "Eta for k-diffusion samplers", gr.Slider, {"minimum": 0.0, "maximum": 1.0, "step": 0.01}, infotext='Eta').info("noise multiplier; currently only applies to ancestral samplers (i.e. Euler a) and SDE samplers"),
     "ddim_discretize": OptionInfo('uniform', "img2img DDIM discretize", gr.Radio, {"choices": ['uniform', 'quad']}),
