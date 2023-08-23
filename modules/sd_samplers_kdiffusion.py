@@ -76,13 +76,15 @@ def sample_dpmpp_2m_alt(model, x, sigmas, extra_args=None, callback=None, disabl
     return x
     
 @torch.no_grad()
-def sample_dpmpp_3m_sde_alt(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
+def sample_dpmpp_3m_sde_alt(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, r=1 / 2):
     """DPM-Solver++(3M) SDE."""
 
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
     noise_sampler = BrownianTreeNoiseSampler(x, sigma_min, sigma_max) if noise_sampler is None else noise_sampler
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
+    sigma_fn = lambda t: t.neg().exp()
+    t_fn = lambda sigma: sigma.log().neg()
 
     denoised_1, denoised_2 = None, None
     h_1, h_2 = None, None
@@ -97,11 +99,25 @@ def sample_dpmpp_3m_sde_alt(model, x, sigmas, extra_args=None, callback=None, di
             dt = sigmas[i + 1] - sigmas[i]
             x = x + d * dt
         else:
-            t, s = -sigmas[i].log(), -sigmas[i + 1].log()
-            h = s - t
+            t, t_next = t_fn(sigmas[i]), t_fn(sigmas[i + 1])
+            h = t_next - t
+            s = t + h * r
+            fac = 1 / (2 * r)
             h_eta = h * (eta + 1)
 
-            x = torch.exp(-h_eta) * x + (-h_eta).expm1().neg() * denoised
+            # Step 1
+            sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(s), eta)
+            s_ = t_fn(sd)
+            x_2 = (sigma_fn(s_) / sigma_fn(t)) * x - (t - s_).expm1() * denoised
+            x_2 = x_2 + noise_sampler(sigma_fn(t), sigma_fn(s)) * s_noise * su
+            denoised_2 = model(x_2, sigma_fn(s) * s_in, **extra_args)
+
+            # Step 2
+            sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(t_next), eta)
+            t_next_ = t_fn(sd)
+            denoised_d = (1 - fac) * denoised + fac * denoised_2
+            x = (sigma_fn(t_next_) / sigma_fn(t)) * x - (t - t_next_).expm1() * denoised_d
+            x = x + noise_sampler(sigma_fn(t), sigma_fn(t_next)) * s_noise * su
 
             if h_2 is not None:
                 r0 = h_1 / h
