@@ -3,7 +3,7 @@ import torch
 import inspect
 import k_diffusion.sampling
 from modules import prompt_parser, devices, sd_samplers_common
-from k_diffusion.sampling import to_d, BrownianTreeNoiseSampler
+from k_diffusion.sampling import to_d, BrownianTreeNoiseSampler, get_ancestral_step
 from modules.shared import opts, state
 import modules.shared as shared
 from modules.script_callbacks import CFGDenoiserParams, cfg_denoiser_callback
@@ -110,14 +110,13 @@ def sample_dpmpp_3m_sde_alt(model, x, sigmas, extra_args=None, callback=None, di
             s_ = t_fn(sd)
             x_2 = (sigma_fn(s_) / sigma_fn(t)) * x - (t - s_).expm1() * denoised
             x_2 = x_2 + noise_sampler(sigma_fn(t), sigma_fn(s)) * s_noise * su
-            denoised_2 = model(x_2, sigma_fn(s) * s_in, **extra_args)
+            denoised_1 = model(x_2, sigma_fn(s) * s_in, **extra_args)
 
             # Step 2
             sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(t_next), eta)
             t_next_ = t_fn(sd)
-            denoised_d = (1 - fac) * denoised + fac * denoised_2
+            denoised_d = (1 - fac) * denoised + fac * denoised_1
             x = (sigma_fn(t_next_) / sigma_fn(t)) * x - (t - t_next_).expm1() * denoised_d
-            x = x + noise_sampler(sigma_fn(t), sigma_fn(t_next)) * s_noise * su
 
             if h_2 is not None:
                 r0 = h_1 / h
