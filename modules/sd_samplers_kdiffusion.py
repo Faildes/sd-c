@@ -3,7 +3,7 @@ import torch
 import inspect
 import k_diffusion.sampling
 from modules import prompt_parser, devices, sd_samplers_common
-
+from k_diffusion.sampling import to_d, BrownianTreeNoiseSampler
 from modules.shared import opts, state
 import modules.shared as shared
 from modules.script_callbacks import CFGDenoiserParams, cfg_denoiser_callback
