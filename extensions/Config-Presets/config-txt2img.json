@@ -113,9 +113,9 @@
         "txt2img_enable_hr": true,
         "txt2img_hr_scale": 1.5,
         "txt2img_hr_upscaler": "Latent (nearest-exact)",
-        "hr_sampler": "DPM++ 3M SDE alt Karras",
         "txt2img_hires_steps": 60,
         "txt2img_denoising_strength": 0.6,
-        "txt2img_cfg_scale": 7
+        "txt2img_cfg_scale": 7,
+        "hr_sampler": 14
     }
 }
