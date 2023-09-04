@@ -77,6 +77,6 @@ class Script(scripts.Script):
 
 def on_ui_settings():
     shared.opts.add_option("memre_debug", shared.OptionInfo(False, "Memory Release - Debug", section=("system", "System")))
-    shared.opts.add_option("memre_dolora", shared.OptionInfo(False, "Memory Release - Refresh LoRA", section=("system", "System")))
+    shared.opts.add_option("memre_dolora", shared.OptionInfo(True, "Memory Release - Refresh LoRA", section=("system", "System")))
 
 script_callbacks.on_ui_settings(on_ui_settings)
